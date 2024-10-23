@@ -1,129 +1,74 @@
-name: Build
-on:
-  workflow_call:
-    inputs:
-      upload-artifact:
-        type: boolean
-        default: true
-      tag-name:
-        type: string
-        default: "draft"
-      channel:
-        type: string
-        default: "dev"
+build:
+  needs: test
+  permissions: write-all
+  strategy:
+    fail-fast: false
+    matrix:
+      include:
+        - platform: android-apk
+          os: ubuntu-latest
+          targets: apk
 
-env:
-  IS_GITHUB_ACTIONS: 1
-  CHANNEL: "${{ inputs.channel }}"
-  FLUTTER_VERSION: '3.24.0'
-  NDK_VERSION: r26d
-  UPLOAD_ARTIFACT: "${{ inputs.upload-artifact }}"
-  TAG_NAME: "${{ inputs.tag-name }}"
-  TARGET_NAME_apk: "Hiddify-Android"
+  runs-on: ${{ matrix.os }}
+  steps:
+    - name: checkout
+      uses: actions/checkout@v3
 
-jobs:
-  test:
-    outputs:
-      draftBuildCode: ${{ steps.draftBuildCode.outputs.datetime }}
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v3
-      - uses: subosito/flutter-action@v2.16.0
-        with:
-          flutter-version: ${{ env.FLUTTER_VERSION }}
-          channel: 'stable'
-          cache: true
-          
-      - name: Prepare
-        run: make linux-prepare
-      - name: Test
-        run: flutter test
+    - name: Setup Flutter
+      uses: subosito/flutter-action@v2.16.0
+      with:
+        flutter-version: ${{ env.FLUTTER_VERSION }}
+        channel: 'stable'
+        cache: true
 
-      - name: make draftBuildCode
-        id: draftBuildCode
-        run: echo "::set-output name=datetime::$(date +'%d.%H.%M')"
+    - name: Setup Java
+      if: startsWith(matrix.platform, 'android')
+      uses: actions/setup-java@v4
+      with:
+        distribution: 'zulu'
+        java-version: 17
 
+    - name: Setup NDK
+      if: startsWith(matrix.platform, 'android')
+      uses: nttld/setup-ndk@v1
+      id: setup-ndk
+      with:
+        ndk-version: ${{ env.NDK_VERSION }}
+        add-to-path: true
+        link-to-sdk: true
 
-  build:
-    needs: test
-    permissions: write-all
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - platform: android-apk
-            os: ubuntu-latest
-            targets: apk
+    - name: Setup Gradle 8.1
+      if: startsWith(matrix.platform, 'android')
+      uses: gradle/actions/setup-gradle@v3
+      with:
+        gradle-version: 7.5
 
-    runs-on: ${{ matrix.os }}
-    steps:
-      - name: checkout
-        uses: actions/checkout@v3
+    - name: Setup dependencies
+      run: |
+        make ${{ matrix.platform }}-install-dependencies
 
-      - name: Setup Flutter
-        uses: subosito/flutter-action@v2.16.0
-        with:
-          flutter-version: ${{ env.FLUTTER_VERSION }}
-          channel: 'stable'
-          cache: true
+    - name: Prepare for ${{ matrix.platform }}
+      run: make ${{ matrix.platform }}-prepare
 
-      - name: Setup Java
-        if: startsWith(matrix.platform, 'android')
-        uses: actions/setup-java@v4
-        with:
-          distribution: 'zulu'
-          java-version: 17
+    - name: Build ${{ matrix.platform }}
+      env:
+        SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+      run: make ${{ matrix.platform }}-release
 
-      - name: Setup NDK
-        if: startsWith(matrix.platform, 'android')
-        uses: nttld/setup-ndk@v1
-        id: setup-ndk
-        with:
-          ndk-version: ${{ env.NDK_VERSION }}
-          add-to-path: true
-          link-to-sdk: true
+    - name: Copy to out Android APK
+      if: matrix.platform == 'android-apk'
+      run: |
+        mkdir out
+        ls -R ./build/app/outputs
+        cp ./build/app/outputs/flutter-apk/*arm64-v8a*.apk out/${TARGET_NAME_apk}-arm64.apk || echo "no arm64 apk"
+        cp ./build/app/outputs/flutter-apk/*armeabi-v7a*.apk out/${TARGET_NAME_apk}-arm7.apk || echo "no arm7 apk"
+        cp ./build/app/outputs/flutter-apk/*x86_64*.apk out/${TARGET_NAME_apk}-x86_64.apk || echo "no x64 apk"
+        cp ./build/app/outputs/flutter-apk/app-release-unsigned.apk out/${TARGET_NAME_apk}-universal.apk || echo "no universal apk"
 
-      - name: Setup Gradle 8.1
-        if: startsWith(matrix.platform, 'android')
-        uses: gradle/actions/setup-gradle@v3
-        with:
-          gradle-version: 7.5
-
-      - name: Setup dependencies
-        run: |
-          make ${{ matrix.platform }}-install-dependencies
-
-      - name: Setup Android Signing Properties
-        if: ${{ inputs.upload-artifact && startsWith(matrix.platform, 'android') }}
-        run: |
-          echo "${{ secrets.ANDROID_SIGNING_KEY }}" | base64 --decode > android/key.jks
-          echo "storeFile=$(pwd)/android/key.jks" > android/key.properties
-          echo "storePassword=${{ secrets.ANDROID_SIGNING_STORE_PASSWORD }}" >> android/key.properties
-          echo "keyPassword=${{ secrets.ANDROID_SIGNING_KEY_PASSWORD }}" >> android/key.properties
-          echo "keyAlias=${{ secrets.ANDROID_SIGNING_KEY_ALIAS }}" >> android/key.properties
-
-      - name: Prepare for ${{ matrix.platform }}
-        run: make ${{ matrix.platform }}-prepare
-
-      - name: Build ${{ matrix.platform }}
-        env:
-          SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
-        run: make ${{ matrix.platform }}-release
-
-      - name: Copy to out Android APK
-        if: matrix.platform == 'android-apk'
-        run: |
-          mkdir out
-          ls -R ./build/app/outputs
-          cp ./build/app/outputs/flutter-apk/*arm64-v8a*.apk out/${TARGET_NAME_apk}-arm64.apk || echo "no arm64 apk"
-          cp ./build/app/outputs/flutter-apk/*armeabi-v7a*.apk out/${TARGET_NAME_apk}-arm7.apk || echo "no arm7 apk"
-          cp ./build/app/outputs/flutter-apk/*x86_64*.apk out/${TARGET_NAME_apk}-x86_64.apk || echo "no x64 apk"
-          cp ./build/app/outputs/flutter-apk/app-release.apk out/${TARGET_NAME_apk}-universal.apk || echo "no universal apk"
-
-      - name: Upload Artifact
-        if: env.UPLOAD_ARTIFACT == 'true'
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ matrix.platform }}
-          path: ./out
-          retention-days: 1
+    - name: Upload Artifact
+      if: env.UPLOAD_ARTIFACT == 'true'
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ matrix.platform }}
+        path: ./out
+        retention-days: 1
