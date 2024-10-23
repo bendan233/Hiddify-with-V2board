@@ -103,7 +103,7 @@ jobs:
         run: flutter build apk --release --no-shrink
 
       - name: Copy to out Android APK
-        if: matrix.platform == 'android-apk'
+        if: matrix.platform == 'android1-apk'
         run: |
           mkdir out
           ls -R ./build/app/outputs
